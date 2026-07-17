@@ -1,0 +1,807 @@
+#include "MainWindow.h"
+#include "InputManager.h"
+#include "RoomManager.h"
+#include "Enemy.h"
+#include "Boss.h"
+#include "GameManager.h"
+#include "OrbitalBullet.h"
+#include "Player.h"
+#include "HUD.h"
+#include <QBrush>
+#include <QColor>
+#include <QApplication>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QHBoxLayout>
+#include <QGraphicsOpacityEffect>
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+{
+    setWindowTitle("Roguelike Dungeon");
+    setFixedSize(820, 640);
+    setFocusPolicy(Qt::StrongFocus);
+
+    m_stack = new QStackedWidget(this);
+    setCentralWidget(m_stack);
+
+    setupMenuPage();
+    setupGamePage();
+    setupSettingsPage();
+    setupCharacterSelectPage();
+    setupDifficultyPage();
+    setupPauseOverlay();
+
+    // 角色数据
+    m_characters.append(CharacterInfo{
+        "小白",
+        ":/assets/player_idle.gif",
+        ":/assets/player_idle.gif",
+        ":/assets/player_run.gif",
+        ":/assets/player_die.png",
+        8,
+        "开发人员的初代角色？平平无奇",
+        "无特殊技能", false, {}
+    });
+    m_characters.append(CharacterInfo{
+        "阿眠",
+        ":/assets/char_amian.png",
+        ":/assets/amian_idle.gif",
+        ":/assets/amian_run.gif",
+        ":/assets/amian_die.png",
+        10,
+        "电玩社舍长吗....不知道游戏如何\n[赢一局就睡！]",
+        "火力全开：每次攻击进行两次攻击\n持续5秒  冷却8秒", true,
+        {":/assets/bullet_1.png", ":/assets/bullet_2.png", ":/assets/bullet_3.png", ":/assets/bullet_4.png"},
+        ":/assets/amian_sfxSkill.wav"
+    });
+
+    m_stack->setCurrentWidget(m_menuPage);
+
+
+    //背景音乐
+    m_bgm = new QMediaPlayer(this);
+    auto *audio = new QAudioOutput(this);
+    m_bgm->setAudioOutput(audio);
+    m_bgm->setSource(QUrl("qrc:/assets/Menu.mp3"));
+    m_bgm->setLoops(QMediaPlayer::Infinite);
+    audio->setVolume(0.4);
+    m_bgm->play();
+}
+
+void MainWindow::setupMenuPage()
+{
+    m_menuPage = new QWidget;
+    m_menuPage->setStyleSheet("background-color: rgb(25, 25, 35);");
+    m_stack->addWidget(m_menuPage);
+
+    auto *layout = new QVBoxLayout;
+    layout->setAlignment(Qt::AlignCenter);
+    layout->setSpacing(18);
+    m_menuPage->setLayout(layout);
+
+    // 标题
+    auto *title = new QLabel("ROGUELIKE DUNGEON");
+    title->setAlignment(Qt::AlignCenter);
+    title->setStyleSheet(
+        "color: rgb(220, 180, 60);"
+        "font-size: 36px;"
+        "font-weight: bold;"
+        "font-family: monospace;"
+        "padding: 20px;"
+    );
+    layout->addWidget(title);
+
+    auto *subtitle = new QLabel("A Binding of Isaac / Soul Knight Inspired Game");
+    subtitle->setAlignment(Qt::AlignCenter);
+    subtitle->setStyleSheet("color: rgb(140, 140, 160); font-size: 14px; font-family: monospace; padding-bottom: 30px;");
+    layout->addWidget(subtitle);
+
+    // 按钮样式
+    QString btnStyle =
+        "QPushButton {"
+        "  background-color: rgb(50, 50, 70);"
+        "  color: white;"
+        "  font-size: 18px;"
+        "  font-family: monospace;"
+        "  border: 2px solid rgb(100, 100, 140);"
+        "  border-radius: 6px;"
+        "  padding: 12px 40px;"
+        "  min-width: 200px;"
+        "}"
+        "QPushButton:hover {"
+        "  background-color: rgb(70, 70, 100);"
+        "  border-color: rgb(180, 160, 60);"
+        "}"
+        "QPushButton:pressed {"
+        "  background-color: rgb(40, 40, 60);"
+        "}";
+
+    m_btnStart = new QPushButton("START GAME");
+    m_btnStart->setStyleSheet(btnStyle);
+    m_btnStart->setCursor(Qt::PointingHandCursor);
+    layout->addWidget(m_btnStart, 0, Qt::AlignCenter);
+
+    m_btnSettings = new QPushButton("SETTINGS");
+    m_btnSettings->setStyleSheet(btnStyle);
+    m_btnSettings->setCursor(Qt::PointingHandCursor);
+    layout->addWidget(m_btnSettings, 0, Qt::AlignCenter);
+
+    m_btnQuit = new QPushButton("QUIT GAME");
+    m_btnQuit->setStyleSheet(btnStyle);
+    m_btnQuit->setCursor(Qt::PointingHandCursor);
+    layout->addWidget(m_btnQuit, 0, Qt::AlignCenter);
+
+    auto *hint = new QLabel("WASD: Move  |  Arrow Keys: Attack  ");
+    hint->setAlignment(Qt::AlignCenter);
+    hint->setStyleSheet("color: rgb(100, 100, 120); font-size: 11px; font-family: monospace; padding-top: 30px;");
+    layout->addWidget(hint);
+
+    connect(m_btnStart, &QPushButton::clicked, this, &MainWindow::onStartClicked);
+    connect(m_btnSettings, &QPushButton::clicked, this, &MainWindow::onSettingsClicked);
+    connect(m_btnQuit, &QPushButton::clicked, this, &MainWindow::onQuitClicked);
+}
+
+void MainWindow::setupGamePage()
+{
+    m_gamePage = new QWidget;
+    auto *gameLayout = new QVBoxLayout;
+    gameLayout->setContentsMargins(0, 0, 0, 0);
+    m_gamePage->setLayout(gameLayout);
+
+    m_scene = new QGraphicsScene(0, 0, 800, 600, this);
+    m_scene->setBackgroundBrush(QBrush(QColor(25, 22, 20)));
+
+    m_view = new QGraphicsView(m_scene);
+    m_view->setRenderHint(QPainter::Antialiasing);
+    m_view->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_view->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_view->setFixedSize(810, 610);
+    m_view->setSceneRect(0, 0, 800, 600);
+    m_view->setFocusPolicy(Qt::NoFocus);
+    gameLayout->addWidget(m_view);
+
+    m_stack->addWidget(m_gamePage);
+
+    InputManager::instance();
+    m_player = new Player(m_scene);
+
+    m_hud = new HUD(m_scene);
+    m_scene->addItem(m_hud);
+
+    m_timer = new QTimer(this);
+    connect(m_timer, &QTimer::timeout, this, &MainWindow::gameLoop);
+}
+
+void MainWindow::setupSettingsPage()
+{
+    m_settingsPage = new QWidget;
+    m_settingsPage->setStyleSheet("background-color: rgb(25, 25, 35);");
+    m_stack->addWidget(m_settingsPage);
+
+    auto *layout = new QVBoxLayout;
+    layout->setAlignment(Qt::AlignCenter);
+    layout->setSpacing(20);
+    m_settingsPage->setLayout(layout);
+
+    auto *title = new QLabel("SETTINGS");
+    title->setAlignment(Qt::AlignCenter);
+    title->setStyleSheet(
+        "color: rgb(220, 180, 60); font-size: 28px; font-weight: bold; font-family: monospace;");
+    layout->addWidget(title);
+
+    auto *sfxLabel = new QLabel("Attack Sound Effect");
+    sfxLabel->setAlignment(Qt::AlignCenter);
+    sfxLabel->setStyleSheet("color: rgb(180, 180, 200); font-size: 14px; font-family: monospace;");
+    layout->addWidget(sfxLabel);
+
+    m_comboSfx = new QComboBox;
+    m_comboSfx->addItem("Default", 0);
+    m_comboSfx->addItem("Mambo", 1);
+    m_comboSfx->addItem("Custom...", 2);
+    m_comboSfx->setStyleSheet(
+        "QComboBox {"
+        "  background-color: rgb(50, 50, 70); color: white; font-size: 14px;"
+        "  font-family: monospace; border: 2px solid rgb(100, 100, 140);"
+        "  border-radius: 4px; padding: 8px 20px; min-width: 200px;"
+        "}"
+        "QComboBox:hover { border-color: rgb(180, 160, 60); }"
+        "QComboBox QAbstractItemView {"
+        "  background-color: rgb(40, 40, 60); color: white;"
+        "  selection-background-color: rgb(70, 70, 100);"
+        "}"
+    );
+    connect(m_comboSfx, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int idx) {
+                GameManager::instance().setSfxChoice(idx);
+                if (idx == 2) {
+                    QString path = QFileDialog::getOpenFileName(
+                        m_settingsPage, "Select Attack Sound", "",
+                        "WAV Files (*.wav);;All Files (*)");
+                    if (!path.isEmpty()) {
+                        GameManager::instance().setCustomSfxPath(path);
+                        // 显示文件名在按钮上
+                        m_comboSfx->setItemText(2,
+                            "Custom: " + QFileInfo(path).fileName());
+                    }
+                }
+            });
+    layout->addWidget(m_comboSfx, 0, Qt::AlignCenter);
+
+    layout->addSpacing(30);
+
+    QString btnStyle =
+        "QPushButton {"
+        "  background-color: rgb(50, 50, 70); color: white; font-size: 16px;"
+        "  font-family: monospace; border: 2px solid rgb(100, 100, 140);"
+        "  border-radius: 6px; padding: 10px 30px; min-width: 160px;"
+        "}"
+        "QPushButton:hover { background-color: rgb(70, 70, 100); border-color: rgb(180, 160, 60); }";
+
+    auto *btnBack = new QPushButton("BACK");
+    btnBack->setStyleSheet(btnStyle);
+    btnBack->setCursor(Qt::PointingHandCursor);
+    connect(btnBack, &QPushButton::clicked, this, &MainWindow::onBackClicked);
+    layout->addWidget(btnBack, 0, Qt::AlignCenter);
+}
+
+void MainWindow::setupCharacterSelectPage()
+{
+    m_charSelectPage = new QWidget;
+    m_charSelectPage->setStyleSheet("background-color: rgb(25, 25, 35);");
+    m_stack->addWidget(m_charSelectPage);
+
+    auto *mainLayout = new QHBoxLayout;
+    mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setSpacing(0);
+    m_charSelectPage->setLayout(mainLayout);
+
+    // ---- 左侧：角色预览（占满整个左半边） ----
+    auto *leftPanel = new QWidget;
+    leftPanel->setMinimumWidth(410);
+    leftPanel->setStyleSheet("background-color: rgb(15, 15, 25);");
+    auto *leftLayout = new QVBoxLayout;
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(0);
+    leftPanel->setLayout(leftLayout);
+
+    m_charNameLabel = new QLabel;
+    m_charNameLabel->setAlignment(Qt::AlignCenter);
+    m_charNameLabel->setStyleSheet(
+        "color: rgb(220, 180, 60); font-size: 30px; font-weight: bold;"
+        " font-family: monospace; padding: 20px 0px 15px 0px;"
+        " background-color: rgba(0,0,0,80);");
+    leftLayout->addWidget(m_charNameLabel);
+
+    m_charPreview = new QLabel;
+    m_charPreview->setAlignment(Qt::AlignCenter);
+    m_charPreview->setStyleSheet("background-color: transparent;");
+    m_charPreview->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    leftLayout->addWidget(m_charPreview, 1);
+
+    mainLayout->addWidget(leftPanel, 1);  // stretch=1 让左半边扩展
+
+    // ---- 右侧：角色介绍 + 操作按钮 ----
+    auto *rightPanel = new QWidget;
+    rightPanel->setFixedWidth(410);
+    rightPanel->setStyleSheet("background-color: rgb(28, 26, 36);");
+    auto *rightLayout = new QVBoxLayout;
+    rightLayout->setAlignment(Qt::AlignTop);
+    rightLayout->setContentsMargins(30, 30, 30, 20);
+    rightLayout->setSpacing(20);
+    rightPanel->setLayout(rightLayout);
+
+    auto *descTitle = new QLabel("Character Background");
+    descTitle->setStyleSheet("color: rgb(180, 160, 120); font-size: 14px; font-weight: bold; font-family: monospace;");
+    rightLayout->addWidget(descTitle);
+
+    m_charDescLabel = new QLabel;
+    m_charDescLabel->setWordWrap(true);
+    m_charDescLabel->setStyleSheet("color: rgb(200, 200, 210); font-size: 13px; font-family: monospace; line-height: 1.6;");
+    m_charDescLabel->setMinimumHeight(80);
+    rightLayout->addWidget(m_charDescLabel);
+
+    auto *skillTitle = new QLabel("Skill");
+    skillTitle->setStyleSheet("color: rgb(200, 160, 80); font-size: 14px; font-weight: bold; font-family: monospace;");
+    rightLayout->addWidget(skillTitle);
+
+    m_charSkillLabel = new QLabel;
+    m_charSkillLabel->setWordWrap(true);
+    m_charSkillLabel->setStyleSheet("color: rgb(180, 220, 255); font-size: 13px; font-family: monospace;");
+    m_charSkillLabel->setMinimumHeight(60);
+    rightLayout->addWidget(m_charSkillLabel);
+
+    rightLayout->addStretch();
+
+    // ---- 操作提示（醒目） ----
+    auto *hint = new QLabel("A D  /  <- ->   to switch character");
+    hint->setAlignment(Qt::AlignCenter);
+    hint->setStyleSheet("color: rgb(255, 220, 60); font-size: 14px; font-weight: bold;"
+                        " font-family: monospace; padding: 10px;");
+    rightLayout->addWidget(hint);
+
+    auto *enterHint = new QLabel("Press ENTER or click CONFIRM to start");
+    enterHint->setAlignment(Qt::AlignCenter);
+    enterHint->setStyleSheet("color: rgb(180, 180, 200); font-size: 12px; font-family: monospace; padding-bottom: 5px;");
+    rightLayout->addWidget(enterHint);
+
+    // ---- 确认按钮（右侧最下方） ----
+    QString btnStyle =
+        "QPushButton {"
+        "  background-color: rgb(50, 50, 70); color: white; font-size: 18px;"
+        "  font-family: monospace; border: 2px solid rgb(100, 100, 140);"
+        "  border-radius: 6px; padding: 12px 40px; min-width: 200px;"
+        "}"
+        "QPushButton:hover { background-color: rgb(70, 70, 100); border-color: rgb(180, 160, 60); }";
+
+    m_btnConfirm = new QPushButton("CONFIRM");
+    m_btnConfirm->setStyleSheet(btnStyle);
+    m_btnConfirm->setCursor(Qt::PointingHandCursor);
+    connect(m_btnConfirm, &QPushButton::clicked, this, &MainWindow::onConfirmClicked);
+    rightLayout->addWidget(m_btnConfirm, 0, Qt::AlignCenter);
+
+    rightLayout->addSpacing(10);
+
+    mainLayout->addWidget(rightPanel);
+}
+
+void MainWindow::setupPauseOverlay()
+{
+    // 半透明遮罩覆盖整个游戏画面
+    m_pauseOverlay = new QWidget(m_gamePage);
+    m_pauseOverlay->setGeometry(0, 0, 820, 640);
+    m_pauseOverlay->setStyleSheet("background-color: rgba(0, 0, 0, 120);");
+    m_pauseOverlay->hide();
+
+    // 暂停面板 - 1/4 屏幕大小, 居中
+    m_pausePanel = new QWidget(m_pauseOverlay);
+    m_pausePanel->setFixedSize(410, 320);
+    m_pausePanel->setStyleSheet(
+        "background-color: rgb(30, 28, 38);"
+        "border: 2px solid rgb(100, 100, 140);"
+        "border-radius: 8px;");
+    // 居中: (820-410)/2=205, (640-320)/2=160
+    m_pausePanel->move(205, 160);
+
+    auto *pauseLayout = new QVBoxLayout;
+    pauseLayout->setAlignment(Qt::AlignCenter);
+    pauseLayout->setSpacing(12);
+    m_pausePanel->setLayout(pauseLayout);
+
+    // 角色图片
+    m_pauseCharImg = new QLabel;
+    m_pauseCharImg->setAlignment(Qt::AlignCenter);
+    m_pauseCharImg->setFixedSize(120, 120);
+    m_pauseCharImg->setStyleSheet("background-color: transparent; border: none;");
+    pauseLayout->addWidget(m_pauseCharImg, 0, Qt::AlignCenter);
+
+    pauseLayout->addSpacing(10);
+
+    // 两个按钮横向排列
+    auto *btnLayout = new QHBoxLayout;
+    btnLayout->setSpacing(20);
+
+    QString btnStyle =
+        "QPushButton {"
+        "  background-color: rgb(50, 50, 70); color: white; font-size: 14px;"
+        "  font-family: monospace; border: 2px solid rgb(100, 100, 140);"
+        "  border-radius: 6px; padding: 10px 24px; min-width: 140px;"
+        "}"
+        "QPushButton:hover { background-color: rgb(70, 70, 100); border-color: rgb(180, 160, 60); }";
+
+    auto *btnResume = new QPushButton("RESUME");
+    btnResume->setStyleSheet(btnStyle);
+    btnResume->setCursor(Qt::PointingHandCursor);
+    connect(btnResume, &QPushButton::clicked, this, &MainWindow::togglePause);
+    btnLayout->addWidget(btnResume);
+
+    auto *btnMenu = new QPushButton("MENU");
+    btnMenu->setStyleSheet(btnStyle);
+    btnMenu->setCursor(Qt::PointingHandCursor);
+    connect(btnMenu, &QPushButton::clicked, this, [this]() {
+        m_paused = false;
+        m_pauseOverlay->hide();
+        returnToMenu();
+    });
+    btnLayout->addWidget(btnMenu);
+
+    pauseLayout->addLayout(btnLayout);
+}
+
+
+
+void MainWindow::togglePause()
+{
+    m_paused = !m_paused;
+    if (m_paused) {
+        m_timer->stop();
+        // 设置暂停面板中的角色图片
+        if (m_charIndex >= 0 && m_charIndex < m_characters.size()) {
+            QString path = m_characters[m_charIndex].assetPath;
+            QPixmap pix(path);
+            if (!pix.isNull())
+                m_pauseCharImg->setPixmap(pix.scaled(100, 100,
+                    Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        }
+        m_pauseOverlay->show();
+    } else {
+        m_pauseOverlay->hide();
+        m_timer->start(16);
+        setFocus();
+    }
+}
+
+void MainWindow::onStartClicked()
+{
+    m_charIndex = 0;
+    refreshCharSelect();
+    m_stack->setCurrentWidget(m_charSelectPage);
+}
+
+void MainWindow::onQuitClicked()
+{
+    QApplication::quit();
+}
+
+void MainWindow::onSettingsClicked()
+{
+    m_comboSfx->setCurrentIndex(GameManager::instance().sfxChoice());
+    QString cp = GameManager::instance().customSfxPath();
+    if (!cp.isEmpty())
+        m_comboSfx->setItemText(2, "Custom: " + QFileInfo(cp).fileName());
+    m_stack->setCurrentWidget(m_settingsPage);
+}
+
+void MainWindow::onBackClicked()
+{
+    m_stack->setCurrentWidget(m_menuPage);
+}
+
+void MainWindow::onConfirmClicked()
+{
+    m_btnConfirm->clearFocus();  // 清除按钮焦点
+    refreshDiffSelect();
+    m_stack->setCurrentWidget(m_diffPage);
+    setFocus();
+}
+
+void MainWindow::setupDifficultyPage()
+{
+    m_diffPage = new QWidget;
+    m_diffPage->setStyleSheet("background-color: rgb(25, 25, 35);");
+    m_diffPage->setFocusPolicy(Qt::NoFocus);
+    m_diffPage->setFocusProxy(this);    // 按键事件转发给 MainWindow
+    m_stack->addWidget(m_diffPage);
+
+    auto *layout = new QVBoxLayout;
+    layout->setAlignment(Qt::AlignCenter);
+    layout->setSpacing(40);
+    m_diffPage->setLayout(layout);
+
+    auto *title = new QLabel("SELECT DIFFICULTY");
+    title->setAlignment(Qt::AlignCenter);
+    title->setStyleSheet("color: rgb(220, 180, 60); font-size: 32px; font-weight: bold; font-family: monospace; padding: 10px;");
+    layout->addWidget(title);
+
+    auto *btnLayout = new QHBoxLayout;
+    btnLayout->setSpacing(60);
+    btnLayout->setAlignment(Qt::AlignCenter);
+    layout->addLayout(btnLayout);
+
+    QString cardStyle = "color: white; font-size: 22px; font-weight: bold; font-family: monospace;"
+                        " border: 3px solid rgb(100, 100, 140); border-radius: 12px;"
+                        " padding: 40px 30px; background-color: rgb(40, 40, 55);"
+                        " min-width: 180px;";
+
+    m_diffNormalLabel = new QLabel("NORMAL");
+    m_diffNormalLabel->setAlignment(Qt::AlignCenter);
+    m_diffNormalLabel->setStyleSheet(cardStyle);
+    btnLayout->addWidget(m_diffNormalLabel);
+
+    m_diffHardLabel = new QLabel("HARD");
+    m_diffHardLabel->setAlignment(Qt::AlignCenter);
+    m_diffHardLabel->setStyleSheet(cardStyle);
+    btnLayout->addWidget(m_diffHardLabel);
+
+    auto *hint = new QLabel("A/D or Arrow Keys to choose   |   Enter to confirm");
+    hint->setAlignment(Qt::AlignCenter);
+    hint->setStyleSheet("color: rgb(120, 120, 140); font-size: 13px; font-family: monospace; padding-top: 20px;");
+    layout->addWidget(hint);
+}
+
+void MainWindow::refreshDiffSelect()
+{
+    QString hl = "color: white; font-size: 22px; font-weight: bold; font-family: monospace;"
+                 " border: 3px solid rgb(220, 180, 60); border-radius: 12px;"
+                 " padding: 40px 30px; background-color: rgb(60, 55, 30);"
+                 " min-width: 180px;";
+    QString normal = "color: white; font-size: 22px; font-weight: bold; font-family: monospace;"
+                     " border: 3px solid rgb(100, 100, 140); border-radius: 12px;"
+                     " padding: 40px 30px; background-color: rgb(40, 40, 55);"
+                     " min-width: 180px;";
+    m_diffNormalLabel->setStyleSheet(m_diffIndex == 0 ? hl : normal);
+    m_diffHardLabel->setStyleSheet(m_diffIndex == 1 ? hl : normal);
+    setFocus();
+}
+
+void MainWindow::onConfirmDiff()
+{
+    GameManager::instance().setDifficulty(m_diffIndex == 0 ?
+        GameManager::Normal : GameManager::Hard);
+    startGame();
+}
+
+void MainWindow::refreshCharSelect()
+{
+    if (m_charIndex < 0 || m_charIndex >= m_characters.size()) return;
+    auto &info = m_characters[m_charIndex];
+
+    m_charNameLabel->setText(info.name);
+    m_charDescLabel->setText(info.description);
+    m_charSkillLabel->setText(info.skillDesc);
+
+    // 停止旧动图
+    if (m_charMovie) { m_charMovie->stop(); delete m_charMovie; m_charMovie = nullptr; }
+
+    // GIF: QMovie 动画; PNG: QPixmap 填满左半区域
+    if (info.assetPath.endsWith(".gif", Qt::CaseInsensitive)) {
+        m_charMovie = new QMovie(info.assetPath);
+        m_charMovie->setScaledSize(QSize(200, 200));
+        m_charPreview->setMovie(m_charMovie);
+        m_charMovie->start();
+    } else {
+        QPixmap pix(info.assetPath);
+        // 撑满整个 QLabel（左半面板），保持宽高比
+        m_charPreview->setPixmap(pix.scaled(m_charPreview->size(),
+            Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        m_charPreview->setScaledContents(false);
+        m_charPreview->setAlignment(Qt::AlignCenter);
+    }
+}
+
+//开始游戏
+void MainWindow::startGame()
+{
+    m_stack->setCurrentWidget(m_gamePage);
+    setFocus();
+
+    if (m_charIndex >= 0 && m_charIndex < m_characters.size())
+        GameManager::instance().setMaxHP(m_characters[m_charIndex].health);
+
+    // 困难模式角色特殊强化: 阿眠 HP→15
+    if (GameManager::instance().isHard()
+        && m_charIndex >= 0 && m_charIndex < m_characters.size()
+        && m_characters[m_charIndex].name == "阿眠") {
+        GameManager::instance().setMaxHP(15);
+    }
+
+    GameManager::instance().reset();
+    auto &ci = m_characters[m_charIndex];
+    GameManager::instance().setSpriteIdle(ci.idlePath);
+    GameManager::instance().setSpriteRun(ci.runPath);
+    GameManager::instance().setSpriteDie(ci.diePath);
+    GameManager::instance().setBulletSprites(ci.bulletSprites);
+    GameManager::instance().setSkillSfxPath(ci.skillSfxInfo);
+    m_player->reloadSprites();
+    m_player->clearOrbitals();
+    RoomManager::instance().init(m_player, m_scene, this);
+    m_gameStarted = true;
+    m_hud->showMessage("");
+    m_timer->start(16);
+
+
+    //游戏内bgm
+    m_bgm->stop();
+
+    QTimer::singleShot(1500, this, [this]() {
+        m_bgm->setSource(QUrl("qrc:/assets/Room by Room.mp3"));
+        m_bgm->play();
+    });
+
+}
+
+
+
+//返回菜单
+void MainWindow::returnToMenu()
+{
+    m_timer->stop();
+    m_gameStarted = false;
+    m_stack->setCurrentWidget(m_menuPage);
+
+    //bgm
+     m_bgm->audioOutput()->setVolume(0.5);
+    m_bgm->setSource(QUrl("qrc:/assets/Menu.mp3"));
+    m_bgm->play();
+}
+
+void MainWindow::keyPressEvent(QKeyEvent *event)
+{
+    if (m_stack->currentWidget() == m_menuPage) {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            onStartClicked();
+        }
+        return;
+    }
+    if (m_stack->currentWidget() == m_diffPage) {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            onConfirmDiff();
+            return;
+        }
+        if (event->key() == Qt::Key_A || event->key() == Qt::Key_Left) {
+            m_diffIndex = (m_diffIndex - 1 + 2) % 2;
+            refreshDiffSelect();
+            return;
+        }
+        if (event->key() == Qt::Key_D || event->key() == Qt::Key_Right) {
+            m_diffIndex = (m_diffIndex + 1) % 2;
+            refreshDiffSelect();
+            return;
+        }
+        return;
+    }
+    if (m_stack->currentWidget() == m_charSelectPage) {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            onConfirmClicked();
+            return;
+        }
+        if (event->key() == Qt::Key_A || event->key() == Qt::Key_Left) {
+            m_charIndex = (m_charIndex - 1 + m_characters.size()) % m_characters.size();
+            refreshCharSelect();
+            return;
+        }
+        if (event->key() == Qt::Key_D || event->key() == Qt::Key_Right) {
+            m_charIndex = (m_charIndex + 1) % m_characters.size();
+            refreshCharSelect();
+            return;
+        }
+        return;
+    }
+
+    if (!m_gameStarted) return;
+
+    // ESC: 暂停
+    if (event->key() == Qt::Key_Escape && !event->isAutoRepeat()) {
+        togglePause();
+        return;
+    }
+
+    // T: 切换无敌
+    if (event->key() == Qt::Key_T && !event->isAutoRepeat()) {
+
+        GameManager::instance().toggleGodMode();
+        return;
+    }
+
+    InputManager::instance().keyPressEvent(event);
+}
+
+void MainWindow::keyReleaseEvent(QKeyEvent *event)
+{
+    if (!m_gameStarted) return;
+
+    InputManager::instance().keyReleaseEvent(event);
+}
+
+void MainWindow::switchBgm(int state)
+{
+    m_bgm->audioOutput()->setVolume(0.5);
+    if (state == 1) {
+        m_bgm->setSource(QUrl("qrc:/assets/Titan Breaker-boss.mp3"));
+    } else {
+        m_bgm->setSource(QUrl("qrc:/assets/Room by Room.mp3"));
+    }
+    m_bgm->play();
+}
+
+
+void MainWindow::gameLoop()
+{
+    if (!m_gameStarted) return;
+
+    bool ended = GameManager::instance().isGameOver() || GameManager::instance().isVictory();
+
+    if (!ended) {
+        qreal dt = 1.0 / 60.0;
+
+        // 转场期间只更新计时器，不更新游戏逻辑
+        if (GameManager::instance().isInTransition()) {
+            GameManager::instance().tickTransition(dt);
+        } else {
+            m_player->update(dt);
+            GameManager::instance().tickInvincible(dt);
+            GameManager::instance().tickPickupMsg(dt);
+            GameManager::instance().tickSkill(dt);
+
+            QList<QGraphicsItem*> allItems = m_scene->items();
+            for (auto *item : allItems) {
+                auto *go = dynamic_cast<GameObject*>(item);
+                if (go && go != m_player) {
+                    go->update(dt);
+                }
+            }
+
+            // 同步 Boss 血量到 GameManager
+            for (auto *item : m_scene->items()) {
+                auto *boss = dynamic_cast<Boss*>(item);
+                if (boss) {
+                    GameManager::instance().setBossHP(boss->hp());
+                    break;
+                }
+            }
+
+            auto &rm = RoomManager::instance();
+            auto *room = rm.currentRoom();
+            if (!room->cleared && (room->type == RoomType::Normal || room->type == RoomType::Boss)) {
+                bool hasEnemies = false;
+                for (auto *item : m_scene->items()) {
+                    auto *enemy = dynamic_cast<Enemy*>(item);
+                    if (enemy && !enemy->isDead() && !enemy->isDying()) {
+                        hasEnemies = true;
+                        break;
+                    }
+                }
+                if (!hasEnemies) {
+                    rm.roomCleared(rm.currentRoomId());
+                }
+            }
+
+            if (GameManager::instance().playerHP() <= 0) {
+                GameManager::instance().setGameOver(true);
+            }
+
+            if (GameManager::instance().isVictory()) {
+                m_hud->showMessage("YOU WIN!");
+                QTimer::singleShot(2500, this, &MainWindow::returnToMenu);
+            } else if (GameManager::instance().isGameOver()) {
+                m_hud->showMessage("GAME OVER");
+                //bgm缓出
+                MainWindow::fadeOut(m_bgm);
+
+                QTimer::singleShot(2500, this, &MainWindow::returnToMenu);
+            }
+        }
+    }
+
+    // 无论是否结束，都刷新画面
+    m_hud->updateHUD();
+    m_scene->update();
+}
+
+
+
+// 淡入（2 秒）
+void MainWindow::fadeIn(QMediaPlayer *player, qreal targetVol, int duration)
+{
+    auto *timer = new QTimer(player);
+    int steps = 20;
+    qreal step = targetVol / steps;
+    int interval = duration / steps;
+
+    player->audioOutput()->setVolume(0.0);
+    player->play();
+
+    QObject::connect(timer, &QTimer::timeout, player, [=]() mutable {
+        qreal v = player->audioOutput()->volume() + step;
+        if (v >= targetVol) { v = targetVol; timer->stop(); timer->deleteLater(); }
+        player->audioOutput()->setVolume(v);
+    });
+    timer->start(interval);
+}
+
+// 淡出（1.5 秒）→ 停止
+void MainWindow::fadeOut(QMediaPlayer *player, int duration)
+{
+    auto *timer = new QTimer(player);
+    int steps = 20;
+    qreal step = player->audioOutput()->volume() / steps;
+    int interval = duration / steps;
+
+    QObject::connect(timer, &QTimer::timeout, player, [=]() mutable {
+        qreal v = player->audioOutput()->volume() - step;
+        if (v <= 0.0) { v = 0.0; timer->stop(); timer->deleteLater(); player->stop(); }
+        player->audioOutput()->setVolume(v);
+    });
+    timer->start(interval);
+}
+
