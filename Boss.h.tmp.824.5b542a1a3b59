@@ -1,0 +1,44 @@
+#pragma once
+#include "Enemy.h"
+#include <QPixmap>
+
+class Player;
+class QGraphicsScene;
+
+class Boss : public Enemy {
+public:
+    Boss(QGraphicsScene *scene, Player *player,
+         const QPointF &pos, QGraphicsItem *parent = nullptr);
+
+    void update(qreal dt) override;
+    QRectF boundingRect() const override;
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option,
+               QWidget *widget) override;
+
+    int maxHP() const { return m_maxHp; }
+    void takeDamage(int dmg) override;
+
+private:
+    Player *m_player;
+    qreal m_speed = 100.0;
+    qreal m_fanTimer = 0.0;
+    qreal m_ringTimer = 0.0;
+    int m_fanCount = 3;
+    bool m_phase2 = false;
+
+    qreal m_spawnTimer = 1.2;
+    qreal m_spawnScale = 0.0;
+
+    void shootFan();
+    void shootRing();
+
+    int m_maxHp = 50;
+    static constexpr qreal kColRadius = 56.0;
+
+    QPixmap m_sprite;
+    bool m_spriteLoaded = false;
+
+    // 绘制尺寸（原始图片 288×98）
+    static constexpr int kDrawW = 288;
+    static constexpr int kDrawH = 98;
+};
